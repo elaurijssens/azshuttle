@@ -52,6 +52,8 @@ SSHUTTLE_BIN = "sshuttle"
 tunnel_proc: Optional[subprocess.Popen] = None
 sshuttle_proc: Optional[subprocess.Popen] = None
 
+AZ_KNOWN_HOSTS = Path.home() / ".ssh" / "azshuttle_known_hosts"
+
 
 # ---------- Utilities ----------
 
@@ -88,8 +90,8 @@ def kill_proc_tree(p: Optional[subprocess.Popen], sig=signal.SIGTERM) -> None:
                 pass
 
 
-# --- change cleanup to accept an explicit exit code ---
-def cleanup(signum=None, frame=None, *, exit_code: int | None = None):
+def cleanup(signum=None, _frame=None, *, exit_code: Optional[int] = None):
+    """Tear down sshuttle and the bastion tunnel. Works as signal handler and normal function."""
     global tunnel_proc, sshuttle_proc
     print("Cleaning up...")
     kill_proc_tree(sshuttle_proc, signal.SIGTERM)
@@ -100,7 +102,7 @@ def cleanup(signum=None, frame=None, *, exit_code: int | None = None):
 
     if exit_code is not None:
         sys.exit(exit_code)
-    # default behavior when called by a signal handler:
+    # if called by signal, return conventional signal exit code
     sys.exit(0 if signum is None else 128 + (signum % 128))
 
 
@@ -116,7 +118,7 @@ def deep_merge(a: dict, b: dict) -> dict:
 
 def normalize_keys(cfg: dict) -> dict:
     """
-    Convert dashed YAML keys to the internal snake_case names the code uses.
+    Convert dashed YAML keys to internal snake_case names.
     Only touches known keys.
     """
     mapping = {
@@ -132,6 +134,32 @@ def normalize_keys(cfg: dict) -> dict:
         if d in out:
             out[s] = out.pop(d)
     return out
+
+
+def ensure_known_hosts_file():
+    AZ_KNOWN_HOSTS.parent.mkdir(parents=True, exist_ok=True)
+    # touch with restrictive perms; ignore if it already exists
+    try:
+        AZ_KNOWN_HOSTS.touch(mode=0o600, exist_ok=True)
+    except Exception:
+        # On some systems, touch ignores mode if file exists; ensure perms anyway
+        try:
+            os.chmod(AZ_KNOWN_HOSTS, 0o600)
+        except Exception:
+            pass
+
+
+def options_include_ssh_cmd(raw_opts) -> bool:
+    for item in (raw_opts or []):
+        tokens = item if isinstance(item, list) else shlex.split(str(item))
+        if not tokens:
+            continue
+        t0 = tokens[0]
+        if t0 in ("--ssh-cmd", "-e"):
+            return True
+        if t0.startswith("--ssh-cmd"):
+            return True
+    return False
 
 
 # ---------- Core logic ----------
@@ -171,7 +199,13 @@ def start_bastion_tunnel(cfg: dict) -> Optional[subprocess.Popen]:
         "--port", str(port),
     ]
     print("Starting Azure Bastion tunnel...")
-    return subprocess.Popen(cmd, preexec_fn=os.setsid, text=True)
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        preexec_fn=os.setsid,
+        text=True,
+    )
 
 
 def build_friendly_long_options(raw_opts) -> list[str]:
@@ -196,7 +230,7 @@ def build_friendly_long_options(raw_opts) -> list[str]:
     return args
 
 
-def start_sshuttle(cfg: dict) -> subprocess.Popen:
+def start_sshuttle(cfg: dict, profile_name: str) -> subprocess.Popen:
     port = int(cfg["port"])
     try:
         ssh_user = cfg.get("ssh_user") or os.getlogin()
@@ -207,14 +241,29 @@ def start_sshuttle(cfg: dict) -> subprocess.Popen:
     if not networks:
         die("No 'networks' provided in profile.")
 
-    sshuttle_args = build_friendly_long_options(cfg.get("options"))
+    raw_opts = cfg.get("options")
+    sshuttle_args = build_friendly_long_options(raw_opts)
+
+    # If user didn't supply --ssh-cmd/-e, provide a safe default that isolates host keys per profile.
+    if not options_include_ssh_cmd(raw_opts):
+        ensure_known_hosts_file()
+        host_alias = f"azshuttle-{profile_name}"
+        ssh_cmd = [
+            "ssh",
+            "-o", f"HostKeyAlias={host_alias}",
+            "-o", f"UserKnownHostsFile={str(AZ_KNOWN_HOSTS)}",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+        ]
+        sshuttle_args += ["-e", " ".join(shlex.quote(x) for x in ssh_cmd)]
 
     remote = f"{ssh_user}@127.0.0.1:{port}"
     cmd = [SSHUTTLE_BIN] + sshuttle_args + ["-r", remote] + networks
 
     print("Starting sshuttle:")
     print("  " + " ".join(shlex.quote(x) for x in cmd))
-    # Capture output so we can print helpful sudo guidance if it fails
     return subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -287,11 +336,12 @@ def main():
             die(f"Port {port} is not open and tunnel wasn't started.")
         print(f"Waiting up to {timeout}s for port {port}...")
         if not wait_for_port(port, timeout):
-            die(f"Port {port} did not open within {timeout} seconds.")
+            cleanup(exit_code=1)
 
     print("✅ Tunnel ready. Launching sshuttle...")
-    sshuttle_proc = start_sshuttle(cfg)
+    sshuttle_proc = start_sshuttle(cfg, args.profile)
 
+    # Wait and print sudo guidance if it fails
     out, err = sshuttle_proc.communicate()
     code = sshuttle_proc.returncode
 
@@ -302,8 +352,7 @@ def main():
     else:
         if err:
             print(err, file=sys.stderr, end="")
-
-        # Heuristic sudo guidance (optional)
+        # Heuristic: permission / sudo issues on macOS sshuttle often say "Operation not permitted"
         lower = (err or "").lower()
         if ("permission" in lower) or ("operation not permitted" in lower) or ("pfctl" in lower) or ("sudo" in lower):
             user = os.environ.get("USER") or "your-user"
@@ -312,7 +361,6 @@ def main():
             print("Create a sudoers entry to allow passwordless use (UNDERSTAND THE RISK):", file=sys.stderr)
             print(f"\n  {SSHUTTLE_BIN} --sudoers-no-modify --sudoers-user {shlex.quote(user)} | sudo tee /etc/sudoers.d/sshuttle >/dev/null", file=sys.stderr)
             print("\n⚠️  Warning: this can effectively allow running arbitrary commands as root.", file=sys.stderr)
-
         cleanup(exit_code=code)
 
 
