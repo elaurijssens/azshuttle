@@ -22,6 +22,7 @@ profiles:
     target-vm: vm-prod
     target-vm-rg: rg-prod-vms   # optional, if VM in different RG
     port: 2222
+    ssh-key: ~/.ssh/id_rsa_azshuttle  # optional private key for ssh
     networks:
       - 172.16.0.0/12
     options:
@@ -126,6 +127,7 @@ def normalize_keys(cfg: dict) -> dict:
         "target-vm": "target_vm",
         "target-vm-rg": "target_vm_rg",
         "ssh-user": "ssh_user",
+        "ssh-key": "ssh_key",
         "az-bin": "az_bin",
         "sshuttle-bin": "sshuttle_bin",
     }
@@ -175,11 +177,13 @@ def resolve_vm_id(resource_group: str, target_vm: str, target_vm_rg: Optional[st
             [AZ_BIN, "vm", "show", "-g", rg_lookup, "-n", target_vm, "--query", "id", "-o", "tsv"],
             text=True
         ).strip()
-        if not vm_id:
-            die(f"Could not resolve VM resource id for VM '{target_vm}' in RG '{rg_lookup}' (empty output).")
-        return vm_id
     except subprocess.CalledProcessError as e:
         die(f"Failed to get VM id via az for VM '{target_vm}' in RG '{rg_lookup}': {e}")
+
+    if not vm_id:
+        die(f"Could not resolve VM resource id for VM '{target_vm}' in RG '{rg_lookup}' (empty output).")
+
+    return vm_id
 
 
 def start_bastion_tunnel(cfg: dict) -> Optional[subprocess.Popen]:
@@ -253,10 +257,14 @@ def start_sshuttle(cfg: dict, profile_name: str) -> subprocess.Popen:
             "-o", f"HostKeyAlias={host_alias}",
             "-o", f"UserKnownHostsFile={str(AZ_KNOWN_HOSTS)}",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "StrictHostKeyChecking=no",
+            # Accept first key automatically, then enforce; avoids localhost clashes across profiles
+            "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
+            "-o", "IdentitiesOnly=yes",
         ]
+        if cfg.get("ssh_key"):
+            ssh_cmd += ["-i", str(Path(str(cfg["ssh_key"])).expanduser())]
         sshuttle_args += ["-e", " ".join(shlex.quote(x) for x in ssh_cmd)]
 
     remote = f"{ssh_user}@127.0.0.1:{port}"
