@@ -88,7 +88,8 @@ def kill_proc_tree(p: Optional[subprocess.Popen], sig=signal.SIGTERM) -> None:
                 pass
 
 
-def cleanup(signum=None, frame=None):
+# --- change cleanup to accept an explicit exit code ---
+def cleanup(signum=None, frame=None, *, exit_code: int | None = None):
     global tunnel_proc, sshuttle_proc
     print("Cleaning up...")
     kill_proc_tree(sshuttle_proc, signal.SIGTERM)
@@ -96,6 +97,10 @@ def cleanup(signum=None, frame=None):
     time.sleep(0.8)
     kill_proc_tree(sshuttle_proc, signal.SIGKILL)
     kill_proc_tree(tunnel_proc, signal.SIGKILL)
+
+    if exit_code is not None:
+        sys.exit(exit_code)
+    # default behavior when called by a signal handler:
     sys.exit(0 if signum is None else 128 + (signum % 128))
 
 
@@ -285,27 +290,30 @@ def main():
             die(f"Port {port} did not open within {timeout} seconds.")
 
     print("✅ Tunnel ready. Launching sshuttle...")
-    sshuttle_proc = start_sshuttle(cfg)
+sshuttle_proc = start_sshuttle(cfg)
 
-    # Wait and print sudo guidance if it fails
-    out, err = sshuttle_proc.communicate()
-    code = sshuttle_proc.returncode
+out, err = sshuttle_proc.communicate()
+code = sshuttle_proc.returncode
 
-    if code == 0:
+if code == 0:
+    if out:
         print(out, end="")
-    else:
-        # Heuristic: permission / sudo issues on macOS sshuttle often say "Operation not permitted"
-        lower = (err or "").lower()
+    cleanup(exit_code=0)
+else:
+    if err:
         print(err, file=sys.stderr, end="")
-        if ("permission" in lower) or ("operation not permitted" in lower) or ("pfctl" in lower) or ("sudo" in lower):
-            user = os.environ.get("USER") or "your-user"
-            print("\n---", file=sys.stderr)
-            print("It looks like sshuttle needed elevated privileges and failed.", file=sys.stderr)
-            print("You can create a dedicated sudoers entry so sshuttle can run without prompting:", file=sys.stderr)
-            print(f"\n  {SSHUTTLE_BIN} --sudoers-no-modify --sudoers-user {shlex.quote(user)} | sudo tee /etc/sudoers.d/sshuttle >/dev/null", file=sys.stderr)
-            print("\n⚠️  Warning: sshuttle’s sudoers helper itself notes this is INSECURE — it can be abused to run arbitrary commands as root.", file=sys.stderr)
-            print("Only do this if you understand the risk and trust your environment.", file=sys.stderr)
-        sys.exit(code)
+
+    # Heuristic sudo guidance (optional)
+    lower = (err or "").lower()
+    if ("permission" in lower) or ("operation not permitted" in lower) or ("pfctl" in lower) or ("sudo" in lower):
+        user = os.environ.get("USER") or "your-user"
+        print("\n---", file=sys.stderr)
+        print("sshuttle likely needed elevated privileges and failed.", file=sys.stderr)
+        print("Create a sudoers entry to allow passwordless use (UNDERSTAND THE RISK):", file=sys.stderr)
+        print(f"\n  {SSHUTTLE_BIN} --sudoers-no-modify --sudoers-user {shlex.quote(user)} | sudo tee /etc/sudoers.d/sshuttle >/dev/null", file=sys.stderr)
+        print("\n⚠️  Warning: this can effectively allow running arbitrary commands as root.", file=sys.stderr)
+
+    cleanup(exit_code=code)
 
 
 def run():
