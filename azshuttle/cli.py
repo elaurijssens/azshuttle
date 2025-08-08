@@ -38,53 +38,12 @@ import socket
 import subprocess
 import sys
 import time
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 
 import yaml
-
-import shutil
-
-def which_or_hint(name: str, custom_path: str | None = None) -> str | None:
-    # prefer custom path from YAML if given, else PATH
-    if custom_path:
-        p = Path(custom_path).expanduser()
-        return str(p) if p.exists() and os.access(p, os.X_OK) else None
-    return shutil.which(name)
-
-def check_dependencies(az_bin: str | None, sshuttle_bin: str | None, *, verbose: bool = False) -> None:
-    ok = True
-    az_path = which_or_hint("az", az_bin)
-    sh_path = which_or_hint("sshuttle", sshuttle_bin)
-
-    if not az_path:
-        ok = False
-        print("❌ Azure CLI not found.", file=sys.stderr)
-        print("   Install on macOS with:", file=sys.stderr)
-        print("     brew install azure-cli", file=sys.stderr)
-    elif verbose:
-        try:
-            out = subprocess.check_output([az_bin or "az", "version"], text=True, stderr=subprocess.STDOUT)
-            print(f"✔ az at {az_path}")
-        except Exception:
-            print(f"✔ az at {az_path}")
-
-    if not sh_path:
-        ok = False
-        print("❌ sshuttle not found.", file=sys.stderr)
-        print("   Install on macOS with:", file=sys.stderr)
-        print("     brew install sshuttle", file=sys.stderr)
-        print("   (Or: pipx inject azshuttle sshuttle)", file=sys.stderr)
-    elif verbose:
-        try:
-            out = subprocess.check_output([sshuttle_bin or "sshuttle", "-V"], text=True, stderr=subprocess.STDOUT)
-            print(f"✔ sshuttle at {sh_path} ({out.strip()})")
-        except Exception:
-            print(f"✔ sshuttle at {sh_path}")
-
-    if not ok:
-        sys.exit(1)
 
 DEFAULT_CONFIG_PATH = Path.home() / ".ssh" / "azshuttle.yml"
 
@@ -186,7 +145,6 @@ def ensure_known_hosts_file():
     try:
         AZ_KNOWN_HOSTS.touch(mode=0o600, exist_ok=True)
     except Exception:
-        # On some systems, touch ignores mode if file exists; ensure perms anyway
         try:
             os.chmod(AZ_KNOWN_HOSTS, 0o600)
         except Exception:
@@ -204,6 +162,62 @@ def options_include_ssh_cmd(raw_opts) -> bool:
         if t0.startswith("--ssh-cmd"):
             return True
     return False
+
+
+def options_include_flag(raw_opts, flag: str) -> bool:
+    """Return True if options already include a specific long flag (e.g., '--no-sudo-pythonpath')."""
+    long = flag if flag.startswith("--") else f"--{flag}"
+    for item in (raw_opts or []):
+        tokens = item if isinstance(item, list) else shlex.split(str(item))
+        if not tokens:
+            continue
+        if tokens[0] == long or (tokens[0].startswith(long + "=")):
+            return True
+    return False
+
+
+def which_or_hint(name: str, custom_path: Optional[str] = None) -> Optional[str]:
+    # prefer custom path from YAML if given, else PATH
+    if custom_path:
+        p = Path(custom_path).expanduser()
+        return str(p) if p.exists() and os.access(p, os.X_OK) else None
+    return shutil.which(name)
+
+
+def check_dependencies(az_bin: Optional[str], sshuttle_bin: Optional[str], *, verbose: bool = False) -> dict:
+    """
+    Return dict with discovered paths and print friendly guidance if missing.
+    Keys: {'az': '/path/to/az' | None, 'sshuttle': '/path/to/sshuttle' | None}
+    """
+    result = {"az": None, "sshuttle": None}
+    az_path = which_or_hint("az", az_bin)
+    sh_path = which_or_hint("sshuttle", sshuttle_bin)
+
+    if not az_path:
+        print("❌ Azure CLI not found.", file=sys.stderr)
+        print("   Install on macOS with:", file=sys.stderr)
+        print("     brew install azure-cli", file=sys.stderr)
+    else:
+        result["az"] = az_path
+        if verbose:
+            print(f"✔ az at {az_path}")
+
+    if not sh_path:
+        print("❌ sshuttle not found.", file=sys.stderr)
+        print("   Install on macOS with:", file=sys.stderr)
+        print("     brew install sshuttle", file=sys.stderr)
+        print("   (Or: pipx inject azshuttle sshuttle)", file=sys.stderr)
+    else:
+        result["sshuttle"] = sh_path
+        if verbose:
+            # '-V' prints version; don't crash if it doesn't
+            try:
+                out = subprocess.check_output([sh_path, "-V"], text=True, stderr=subprocess.STDOUT)
+                print(f"✔ sshuttle at {sh_path} ({out.strip()})")
+            except Exception:
+                print(f"✔ sshuttle at {sh_path}")
+
+    return result
 
 
 # ---------- Core logic ----------
@@ -290,6 +304,10 @@ def start_sshuttle(cfg: dict, profile_name: str) -> subprocess.Popen:
     raw_opts = cfg.get("options")
     sshuttle_args = build_friendly_long_options(raw_opts)
 
+    # Always add --no-sudo-pythonpath unless user already set it
+    if not options_include_flag(raw_opts, "--no-sudo-pythonpath"):
+        sshuttle_args.append("--no-sudo-pythonpath")
+
     # If user didn't supply --ssh-cmd/-e, provide a safe default that isolates host keys per profile.
     if not options_include_ssh_cmd(raw_opts):
         ensure_known_hosts_file()
@@ -362,14 +380,58 @@ def load_profile(cfg_path: Path, profile: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="sshuttle over Azure Bastion, configured via YAML.")
-    parser.add_argument("profile", help="Profile name under 'profiles'")
+    parser.add_argument("profile", nargs="?", help="Profile name under 'profiles' (omit with --doctor)")
     parser.add_argument("-c", "--config", default=str(DEFAULT_CONFIG_PATH), help=f"YAML path (default: {DEFAULT_CONFIG_PATH})")
+    parser.add_argument("--doctor", action="store_true", help="Check external dependencies and sudoers guidance")
     args = parser.parse_args()
 
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
         signal.signal(sig, cleanup)
 
-    cfg = load_profile(Path(args.config).expanduser(), args.profile)
+    cfg_path = Path(args.config).expanduser()
+
+    if args.doctor:
+        # Honor global overrides if YAML exists
+        az_override = None
+        sh_override = None
+        if cfg_path.exists():
+            data = yaml.safe_load(cfg_path.read_text()) or {}
+            global_block = normalize_keys((data.get("global") or {}))
+            az_override = global_block.get("az_bin")
+            sh_override = global_block.get("sshuttle_bin")
+
+        found = check_dependencies(az_override, sh_override, verbose=True)
+
+        # sudoers guidance
+        sh_path = found.get("sshuttle") or sh_override or "sshuttle"
+        print("\nSudoers (minimal) for passwordless sshuttle (UNDERSTAND THE RISK):")
+        print(f"  # For current user only")
+        print(f"  {os.environ.get('USER','your-user')} ALL=(root) NOPASSWD: {sh_path}")
+        print("\nNote: azshuttle adds --no-sudo-pythonpath automatically.")
+        print("If sshuttle still prompts for sudo, create the file:")
+        print("  sudo visudo -f /etc/sudoers.d/azshuttle")
+        print("…and paste the line above. Then re-run:")
+        print("  azshuttle --doctor\n")
+        return
+
+    if not args.profile:
+        die("Profile is required unless you use --doctor.")
+
+    cfg = load_profile(cfg_path, args.profile)
+
+    # Preflight checks using resolved binaries (from YAML globals)
+    check_dependencies(AZ_BIN, SSHUTTLE_BIN)
+
+    # Warn if ssh_key exists but has loose perms
+    if cfg.get("ssh_key"):
+        key_path = Path(str(cfg["ssh_key"])).expanduser()
+        if key_path.exists():
+            try:
+                mode = key_path.stat().st_mode & 0o777
+                if mode & 0o077:
+                    print(f"⚠️  SSH key {key_path} has permissive mode {oct(mode)}; recommend chmod 600 {key_path}", file=sys.stderr)
+            except Exception:
+                pass
 
     for key in ("resource_group", "bastion", "target_vm", "port"):
         if key not in cfg:
@@ -408,9 +470,12 @@ def main():
             user = os.environ.get("USER") or "your-user"
             print("\n---", file=sys.stderr)
             print("sshuttle likely needed elevated privileges and failed.", file=sys.stderr)
-            print("Create a sudoers entry to allow passwordless use (UNDERSTAND THE RISK):", file=sys.stderr)
-            print(f"\n  {SSHUTTLE_BIN} --sudoers-no-modify --sudoers-user {shlex.quote(user)} | sudo tee /etc/sudoers.d/sshuttle >/dev/null", file=sys.stderr)
-            print("\n⚠️  Warning: this can effectively allow running arbitrary commands as root.", file=sys.stderr)
+            print("Create a minimal sudoers entry to allow passwordless use (UNDERSTAND THE RISK):", file=sys.stderr)
+            # Use discovered path if possible
+            sh_path = which_or_hint("sshuttle", SSHUTTLE_BIN) or SSHUTTLE_BIN
+            print(f"\n  {user} ALL=(root) NOPASSWD: {sh_path}\n", file=sys.stderr)
+            print("azshuttle already adds --no-sudo-pythonpath automatically.", file=sys.stderr)
+            print("Install with: sudo visudo -f /etc/sudoers.d/azshuttle", file=sys.stderr)
         cleanup(exit_code=code)
 
 
