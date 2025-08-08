@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azshuttle"
-version = "0.1.0"
+version = "0.1.1"
 description = "Run sshuttle over Azure Bastion using YAML profiles"
 readme = "README.md"
 authors = [
