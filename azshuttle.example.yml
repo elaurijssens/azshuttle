@@ -1,0 +1,19 @@
+myconfig:
+  resource_group: my_rg
+  bastion: my_bastion
+  target_vm: my_vm
+  ssh_user: myuser            # optional; defaults to current login
+  port: 2222                  # local listening port for Bastion tunnel
+  timeout: 10                 # optional; seconds to wait for port
+  networks:
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  options:
+    - dns                     # -> --dns
+    - auto-hosts              # -> --auto-hosts
+    - auto-nets               # -> --auto-nets
+    - exclude 192.168.1.0/24  # -> --exclude 192.168.1.0/24
+    - exclude 192.168.4.0/22  # -> --exclude 192.168.4.0/22
+  # Optional: override binaries if needed
+  # az_bin: /opt/homebrew/bin/az
+  # sshuttle_bin: /opt/homebrew/bin/sshuttle
