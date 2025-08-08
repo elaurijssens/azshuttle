@@ -44,6 +44,48 @@ from typing import Optional
 
 import yaml
 
+import shutil
+
+def which_or_hint(name: str, custom_path: str | None = None) -> str | None:
+    # prefer custom path from YAML if given, else PATH
+    if custom_path:
+        p = Path(custom_path).expanduser()
+        return str(p) if p.exists() and os.access(p, os.X_OK) else None
+    return shutil.which(name)
+
+def check_dependencies(az_bin: str | None, sshuttle_bin: str | None, *, verbose: bool = False) -> None:
+    ok = True
+    az_path = which_or_hint("az", az_bin)
+    sh_path = which_or_hint("sshuttle", sshuttle_bin)
+
+    if not az_path:
+        ok = False
+        print("❌ Azure CLI not found.", file=sys.stderr)
+        print("   Install on macOS with:", file=sys.stderr)
+        print("     brew install azure-cli", file=sys.stderr)
+    elif verbose:
+        try:
+            out = subprocess.check_output([az_bin or "az", "version"], text=True, stderr=subprocess.STDOUT)
+            print(f"✔ az at {az_path}")
+        except Exception:
+            print(f"✔ az at {az_path}")
+
+    if not sh_path:
+        ok = False
+        print("❌ sshuttle not found.", file=sys.stderr)
+        print("   Install on macOS with:", file=sys.stderr)
+        print("     brew install sshuttle", file=sys.stderr)
+        print("   (Or: pipx inject azshuttle sshuttle)", file=sys.stderr)
+    elif verbose:
+        try:
+            out = subprocess.check_output([sshuttle_bin or "sshuttle", "-V"], text=True, stderr=subprocess.STDOUT)
+            print(f"✔ sshuttle at {sh_path} ({out.strip()})")
+        except Exception:
+            print(f"✔ sshuttle at {sh_path}")
+
+    if not ok:
+        sys.exit(1)
+
 DEFAULT_CONFIG_PATH = Path.home() / ".ssh" / "azshuttle.yml"
 
 # Set from YAML global block (dashed keys)
