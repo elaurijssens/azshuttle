@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azshuttle"
+version = "0.1.0"
+description = "Run sshuttle over Azure Bastion using YAML profiles"
+readme = "README.md"
+authors = [
+    { name = "Emma Laurijssens van Engelenhoven", email = "emma@esp.nl" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = [
+    "PyYAML>=6.0"
+]
+keywords = ["sshuttle", "azure", "bastion", "vpn"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+
+[project.scripts]
+azshuttle = "azshuttle.cli:run"
