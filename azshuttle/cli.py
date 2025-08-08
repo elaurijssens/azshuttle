@@ -298,7 +298,7 @@ def main():
         lower = (err or "").lower()
         print(err, file=sys.stderr, end="")
         if ("permission" in lower) or ("operation not permitted" in lower) or ("pfctl" in lower) or ("sudo" in lower):
-            user = cfg.get("ssh_user") or os.environ.get("USER") or "your-user"
+            user = os.environ.get("USER") or "your-user"
             print("\n---", file=sys.stderr)
             print("It looks like sshuttle needed elevated privileges and failed.", file=sys.stderr)
             print("You can create a dedicated sudoers entry so sshuttle can run without prompting:", file=sys.stderr)
