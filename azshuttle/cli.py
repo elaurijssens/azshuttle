@@ -290,30 +290,30 @@ def main():
             die(f"Port {port} did not open within {timeout} seconds.")
 
     print("✅ Tunnel ready. Launching sshuttle...")
-sshuttle_proc = start_sshuttle(cfg)
+    sshuttle_proc = start_sshuttle(cfg)
 
-out, err = sshuttle_proc.communicate()
-code = sshuttle_proc.returncode
+    out, err = sshuttle_proc.communicate()
+    code = sshuttle_proc.returncode
 
-if code == 0:
-    if out:
-        print(out, end="")
-    cleanup(exit_code=0)
-else:
-    if err:
-        print(err, file=sys.stderr, end="")
+    if code == 0:
+        if out:
+            print(out, end="")
+        cleanup(exit_code=0)
+    else:
+        if err:
+            print(err, file=sys.stderr, end="")
 
-    # Heuristic sudo guidance (optional)
-    lower = (err or "").lower()
-    if ("permission" in lower) or ("operation not permitted" in lower) or ("pfctl" in lower) or ("sudo" in lower):
-        user = os.environ.get("USER") or "your-user"
-        print("\n---", file=sys.stderr)
-        print("sshuttle likely needed elevated privileges and failed.", file=sys.stderr)
-        print("Create a sudoers entry to allow passwordless use (UNDERSTAND THE RISK):", file=sys.stderr)
-        print(f"\n  {SSHUTTLE_BIN} --sudoers-no-modify --sudoers-user {shlex.quote(user)} | sudo tee /etc/sudoers.d/sshuttle >/dev/null", file=sys.stderr)
-        print("\n⚠️  Warning: this can effectively allow running arbitrary commands as root.", file=sys.stderr)
+        # Heuristic sudo guidance (optional)
+        lower = (err or "").lower()
+        if ("permission" in lower) or ("operation not permitted" in lower) or ("pfctl" in lower) or ("sudo" in lower):
+            user = os.environ.get("USER") or "your-user"
+            print("\n---", file=sys.stderr)
+            print("sshuttle likely needed elevated privileges and failed.", file=sys.stderr)
+            print("Create a sudoers entry to allow passwordless use (UNDERSTAND THE RISK):", file=sys.stderr)
+            print(f"\n  {SSHUTTLE_BIN} --sudoers-no-modify --sudoers-user {shlex.quote(user)} | sudo tee /etc/sudoers.d/sshuttle >/dev/null", file=sys.stderr)
+            print("\n⚠️  Warning: this can effectively allow running arbitrary commands as root.", file=sys.stderr)
 
-    cleanup(exit_code=code)
+        cleanup(exit_code=code)
 
 
 def run():
