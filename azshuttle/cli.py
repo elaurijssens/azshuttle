@@ -253,7 +253,7 @@ def start_sshuttle(cfg: dict, profile_name: str) -> subprocess.Popen:
             "-o", f"HostKeyAlias={host_alias}",
             "-o", f"UserKnownHostsFile={str(AZ_KNOWN_HOSTS)}",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "StrictHostKeyChecking=yes",
+            "-o", "StrictHostKeyChecking=no",
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
         ]
